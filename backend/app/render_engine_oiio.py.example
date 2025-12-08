@@ -1,0 +1,130 @@
+"""
+使用 OpenImageIO 的渲染引擎示例
+注意：这需要安装 OpenImageIO 的 Python 绑定
+
+安装方法：
+1. 安装 OpenImageIO: https://openimageio.readthedocs.io/en/latest/install.html
+2. 安装 Python 绑定: pip install OpenImageIO
+
+如果无法安装 OIIO，当前项目使用 Pillow 作为替代方案
+"""
+import time
+from io import BytesIO
+from typing import List, Tuple
+import numpy as np
+
+try:
+    import OpenImageIO as oiio
+    OIIO_AVAILABLE = True
+except ImportError:
+    OIIO_AVAILABLE = False
+    print("Warning: OpenImageIO not available, using Pillow fallback")
+
+from PIL import Image, ImageDraw, ImageFont
+from app.models import SubtitleItem, RenderConfig
+
+
+class RenderEngineOIIO:
+    """使用 OpenImageIO 的渲染引擎"""
+    
+    def __init__(self):
+        if not OIIO_AVAILABLE:
+            raise ImportError("OpenImageIO is not available")
+        self.font_cache = {}
+    
+    def render_preview(self, config: RenderConfig) -> Tuple[bytes, float]:
+        """渲染预览帧（PNG格式）"""
+        start_time = time.time()
+        
+        # 使用 OIIO 创建图像缓冲区
+        spec = oiio.ImageSpec(config.width, config.height, 3, oiio.UINT8)
+        buf = oiio.ImageBuf(spec)
+        
+        # 渲染字幕（使用相同的渲染逻辑）
+        for subtitle in config.subtitles:
+            self._render_subtitle_oiio(buf, subtitle)
+        
+        # 转换为 PNG
+        output = BytesIO()
+        buf.write("output.png")
+        # 读取 PNG 数据
+        with open("output.png", "rb") as f:
+            png_data = f.read()
+        
+        render_time = (time.time() - start_time) * 1000
+        return png_data, render_time
+    
+    def render_final_dpx(self, config: RenderConfig) -> Tuple[bytes, float]:
+        """渲染最终 DPX 文件"""
+        start_time = time.time()
+        
+        # 创建 16-bit 图像（DPX 标准）
+        spec = oiio.ImageSpec(config.width, config.height, 3, oiio.UINT16)
+        spec.attribute("oiio:BitsPerSample", 10)  # DPX 通常使用 10-bit
+        
+        buf = oiio.ImageBuf(spec)
+        
+        # 渲染字幕（使用相同的渲染逻辑）
+        for subtitle in config.subtitles:
+            self._render_subtitle_oiio(buf, subtitle)
+        
+        # 保存为 DPX
+        output_path = "output.dpx"
+        buf.write(output_path)
+        
+        # 读取 DPX 数据
+        with open(output_path, "rb") as f:
+            dpx_data = f.read()
+        
+        render_time = (time.time() - start_time) * 1000
+        return dpx_data, render_time
+    
+    def _render_subtitle_oiio(self, buf: oiio.ImageBuf, subtitle: SubtitleItem):
+        """
+        使用 OIIO 渲染单个字幕
+        注意：OIIO 本身不直接支持文本渲染，需要结合其他库（如 Cairo 或 PIL）
+        这里展示如何将文本渲染结果写入 OIIO 缓冲区
+        """
+        # 使用 PIL 渲染文本到临时图像
+        temp_img = Image.new('RGBA', (buf.spec().width, buf.spec().height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(temp_img)
+        
+        font = self._get_font(subtitle.font_family, subtitle.font_size)
+        
+        # 渲染文本（使用与预览相同的逻辑）
+        lines = subtitle.text.split('\n')
+        y_offset = subtitle.y
+        
+        for line in lines:
+            if not line.strip():
+                y_offset += int(subtitle.font_size * subtitle.line_height)
+                continue
+            
+            if subtitle.letter_spacing != 0:
+                x_offset = subtitle.x
+                for char in line:
+                    draw.text((x_offset, y_offset), char, fill=subtitle.color, font=font)
+                    char_bbox = draw.textbbox((0, 0), char, font=font)
+                    char_width = char_bbox[2] - char_bbox[0]
+                    x_offset += char_width + subtitle.letter_spacing
+            else:
+                draw.text((subtitle.x, y_offset), line, fill=subtitle.color, font=font)
+            
+            y_offset += int(subtitle.font_size * subtitle.line_height)
+        
+        # 将 PIL 图像数据写入 OIIO 缓冲区
+        img_array = np.array(temp_img)
+        roi = oiio.ROI(0, buf.spec().width, 0, buf.spec().height, 0, 1, 0, 3)
+        buf.set_pixels(roi, img_array[:, :, :3])
+    
+    def _get_font(self, font_family: str, font_size: int):
+        """获取字体"""
+        cache_key = f"{font_family}_{font_size}"
+        if cache_key not in self.font_cache:
+            try:
+                font = ImageFont.truetype(font_family, font_size)
+            except:
+                font = ImageFont.load_default()
+            self.font_cache[cache_key] = font
+        return self.font_cache[cache_key]
+

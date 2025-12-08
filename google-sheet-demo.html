@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Spreadsheet 嵌入示例</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: #4285f4;
+            color: white;
+            padding: 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .info {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .info h2 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .info code {
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            word-break: break-all;
+        }
+
+        .info .url-box {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+
+        .iframe-container {
+            position: relative;
+            width: 100%;
+            height: 800px;
+            border: none;
+        }
+
+        #google-sheet {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .instructions {
+            padding: 20px;
+            background: #fff3cd;
+            border-top: 1px solid #ffc107;
+        }
+
+        .instructions h3 {
+            color: #856404;
+            margin-bottom: 15px;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            color: #856404;
+        }
+
+        .instructions li {
+            margin-bottom: 10px;
+            line-height: 1.6;
+        }
+
+        .instructions code {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Google Spreadsheet 嵌入示例</h1>
+            <p>这是一个演示如何将 Google 表格嵌入到网页中的示例</p>
+        </div>
+
+        <div class="info">
+            <h2>当前表格路径：</h2>
+            <div class="url-box">
+                <code id="sheet-url">请先创建 Google Spreadsheet 并替换下面的 URL</code>
+            </div>
+            <p style="margin-top: 10px; color: #666; font-size: 14px;">
+                ⚠️ 注意：你需要先创建一个 Google Spreadsheet，然后将 URL 替换到下面的 iframe 中
+            </p>
+        </div>
+
+        <div class="iframe-container">
+            <!-- 
+                替换下面的 src 为你的 Google Spreadsheet URL
+                格式：https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit
+            -->
+            <iframe 
+                id="google-sheet"
+                src="https://docs.google.com/spreadsheets/d/1t8c0h0eeMyt5OdXJozlSz-Yk66qKWYhXwm1z35cPjz8/edit?usp=sharing"
+                frameborder="0"
+                allowfullscreen>
+                <p>你的浏览器不支持 iframe，请<a href="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit" target="_blank">点击这里</a>打开表格</p>
+            </iframe>
+        </div>
+
+        <div class="instructions">
+            <h3>📝 如何创建并嵌入 Google Spreadsheet：</h3>
+            <ol>
+                <li>
+                    <strong>创建 Google Spreadsheet：</strong>
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>访问 <a href="https://sheets.google.com" target="_blank">https://sheets.google.com</a></li>
+                        <li>点击"空白"创建一个新表格</li>
+                        <li>或者使用现有表格</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>获取表格链接：</strong>
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>点击右上角的"共享"按钮</li>
+                        <li>或者直接复制浏览器地址栏的 URL</li>
+                        <li>URL 格式类似：<code>https://docs.google.com/spreadsheets/d/1RiKDTtVfvi5daecIJCXMb59WVbSplFi3vfHyBPAuSB0/edit</code></li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>设置共享权限：</strong>
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>点击"共享" → "更改" → 选择"任何有链接的人"</li>
+                        <li>选择权限级别（查看者/评论者/编辑者）</li>
+                        <li>点击"完成"</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>替换 URL：</strong>
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>打开这个 HTML 文件的源代码</li>
+                        <li>找到 <code>&lt;iframe src="..."&gt;</code> 标签</li>
+                        <li>将 <code>YOUR_SHEET_ID</code> 替换为你的表格 ID</li>
+                        <li>表格 ID 是 URL 中 <code>/d/</code> 和 <code>/edit</code> 之间的那串字符</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>测试：</strong>
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>在浏览器中打开这个 HTML 文件</li>
+                        <li>应该能看到嵌入的 Google 表格</li>
+                        <li>可以直接在 iframe 中编辑表格</li>
+                    </ul>
+                </li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        // 自动更新显示的 URL
+        const iframe = document.getElementById('google-sheet');
+        const urlDisplay = document.getElementById('sheet-url');
+        
+        iframe.addEventListener('load', function() {
+            urlDisplay.textContent = iframe.src;
+        });
+
+        // 如果 URL 还是占位符，显示提示
+        if (iframe.src.includes('YOUR_SHEET_ID')) {
+            urlDisplay.textContent = '⚠️ 请先替换 YOUR_SHEET_ID 为你的实际表格 ID';
+            urlDisplay.style.color = '#d32f2f';
+        }
+    </script>
+</body>
+</html>
+
+
