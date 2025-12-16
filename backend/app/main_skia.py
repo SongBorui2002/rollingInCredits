@@ -3,13 +3,27 @@ FastAPI 后端主文件 - Skia 版本
 使用 Skia 渲染引擎替代 Pillow
 """
 import base64
-import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 
-from app.models import RenderConfig, PreviewResponse
+from app.models import (
+    RenderConfig,
+    PreviewResponse,
+    ScrollPreviewRequest,
+    ScrollPreviewResponse,
+    ScrollFullPreviewResponse,
+    RenderSequenceRequest,
+)
 from app.render_engine_skia import RenderEngineSkia
+from app.render_engine_scroll import LongScrollRenderEngineSkia
+import tempfile
+import zipfile
+import os
+
+# 固定临时目录：项目根目录下 temp
+BASE_TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "temp"))
+os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 
 app = FastAPI(title="RollingInCredits API (Skia)")
 
@@ -24,6 +38,7 @@ app.add_middleware(
 
 # 初始化 Skia 渲染引擎
 render_engine = RenderEngineSkia()
+scroll_engine = LongScrollRenderEngineSkia()
 
 
 @app.get("/")
@@ -108,4 +123,134 @@ async def render_tiff(config: RenderConfig):
 async def health():
     """健康检查"""
     return {"status": "ok", "engine": "Skia"}
+
+
+@app.post("/api/preview/scroll-chunk", response_model=ScrollPreviewResponse)
+async def get_scroll_chunk(payload: ScrollPreviewRequest):
+    """
+    获取全分辨率滚动预览的区段 PNG
+    参数：
+    - config: RenderConfig（与最终渲染一致，无降采样）
+    - y_start: 区段起始 y（逻辑坐标，0 顶部）
+    - chunk_height: 区段高度
+    """
+    try:
+        png_data, render_time, total_height = scroll_engine.render_chunk_png(
+            config=payload.config,
+            y_start=payload.y_start,
+            chunk_height=payload.chunk_height,
+            total_height=None,
+        )
+        preview_base64 = base64.b64encode(png_data).decode("utf-8")
+        preview_url = f"data:image/png;base64,{preview_base64}"
+        return ScrollPreviewResponse(
+            preview_url=preview_url,
+            render_time_ms=render_time,
+            total_height=total_height,
+            y_start=payload.y_start,
+            chunk_height=payload.chunk_height,
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
+
+
+@app.post("/api/preview/scroll-full", response_model=ScrollFullPreviewResponse)
+async def get_scroll_full(config: RenderConfig):
+    """
+    获取全分辨率长图（一次性渲染，不做分块），用于前端本地滚动预览
+    """
+    try:
+        png_data, render_time, total_height = scroll_engine.render_full_png(config)
+        preview_base64 = base64.b64encode(png_data).decode("utf-8")
+        preview_url = f"data:image/png;base64,{preview_base64}"
+        return ScrollFullPreviewResponse(
+            preview_url=preview_url,
+            render_time_ms=render_time,
+            total_height=total_height,
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
+
+
+@app.post("/api/render/tiff-seq")
+async def render_tiff_sequence(config: RenderConfig):
+    """
+    渲染长画布为 TIFF 序列并打包 ZIP 返回
+    """
+    try:
+        with tempfile.TemporaryDirectory(dir=BASE_TEMP_DIR) as tmpdir:
+            frame_paths, render_time, total_height = scroll_engine.render_tiff_sequence(
+                config=config,
+                output_dir=tmpdir,
+            )
+
+            # 打包 ZIP
+            zip_path = os.path.join(tmpdir, "tiff_sequence.zip")
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for p in frame_paths:
+                    zf.write(p, arcname=os.path.basename(p))
+
+            with open(zip_path, "rb") as f:
+                data = f.read()
+
+            return Response(
+                content=data,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": "attachment; filename=tiff_sequence.zip",
+                    "X-Render-Time-Ms": str(render_time),
+                    "X-Total-Height": str(total_height),
+                    "X-Frame-Count": str(len(frame_paths)),
+                },
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
+
+
+@app.post("/api/render/tiff-seq-fps")
+async def render_tiff_sequence_fps(req: RenderSequenceRequest):
+    """
+    基于 FPS/时长/速度 的逐帧渲染，输出 TIFF 序列 ZIP
+    """
+    try:
+        with tempfile.TemporaryDirectory(dir=BASE_TEMP_DIR) as tmpdir:
+            frame_paths, render_time, total_height, total_frames = scroll_engine.render_tiff_sequence_timebased(
+                req=req,
+                output_dir=tmpdir,
+            )
+
+            zip_path = os.path.join(tmpdir, "tiff_sequence.zip")
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for p in frame_paths:
+                    zf.write(p, arcname=os.path.basename(p))
+
+            with open(zip_path, "rb") as f:
+                data = f.read()
+
+            return Response(
+                content=data,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": "attachment; filename=tiff_sequence.zip",
+                    "X-Render-Time-Ms": str(render_time),
+                    "X-Total-Height": str(total_height),
+                    "X-Frame-Count": str(len(frame_paths)),
+                    "X-Fps": str(req.fps),
+                    "X-Total-Frames": str(total_frames),
+                },
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
 

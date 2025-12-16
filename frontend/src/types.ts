@@ -25,3 +25,36 @@ export interface PreviewResponse {
   render_time_ms: number;
 }
 
+export interface ScrollPreviewRequest {
+  config: RenderConfig;
+  y_start: number;
+  chunk_height: number;
+}
+
+export interface ScrollPreviewResponse {
+  preview_url: string;
+  render_time_ms: number;
+  total_height: number;
+  y_start: number;
+  chunk_height: number;
+}
+
+export interface ScrollFullPreviewResponse {
+  preview_url: string;
+  render_time_ms: number;
+  total_height: number;
+}
+
+// 电影级帧率选项
+export type FrameRate = 23.976 | 24 | 25 | 29.97 | 30 | 60 | 120;
+
+export const FRAME_RATES: FrameRate[] = [23.976, 24, 25, 29.97, 30, 60, 120];
+
+// 逐帧渲染序列请求
+export interface RenderSequenceRequest {
+  config: RenderConfig;
+  fps: number; // 目标帧率
+  duration_sec?: number | null; // 总时长（秒），与 scroll_speed 二选一，优先 duration
+  scroll_speed?: number | null; // 滚动速度（px/s），当未提供 duration 时使用
+}
+

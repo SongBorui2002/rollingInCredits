@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import SubtitleEditor from './components/SubtitleEditor';
 import { RenderConfig, SubtitleItem } from './types';
-import { renderDPX, renderTIFF } from './api';
+import { renderDPX, renderTIFF, renderTiffSequenceFps } from './api';
 import './App.css';
 
 function App() {
@@ -42,20 +42,36 @@ function App() {
     setConfig(newConfig);
   };
 
-  const handleRender = async (format: 'dpx' | 'tiff') => {
+  const [renderParams, setRenderParams] = useState({
+    fps: 24,
+    scrollMode: 'speed' as 'speed' | 'duration',
+    scrollSpeed: 200,
+    totalDurationSec: 20,
+  });
+
+  const handleRender = async (format: 'dpx' | 'tiff' | 'tiff-seq-fps') => {
     try {
-      const blob = format === 'dpx' 
+      const blob = format === 'dpx'
         ? await renderDPX(config)
-        : await renderTIFF(config);
+        : format === 'tiff'
+          ? await renderTIFF(config)
+          : await renderTiffSequenceFps({
+              config,
+              fps: renderParams.fps,
+              duration_sec: renderParams.scrollMode === 'duration' ? renderParams.totalDurationSec : null,
+              scroll_speed: renderParams.scrollMode === 'speed' ? renderParams.scrollSpeed : null,
+            });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `output.${format}`;
+      const ext = format === 'tiff-seq-fps' ? 'zip' : format;
+      a.download = `output.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      alert(`渲染完成！${format.toUpperCase()} 文件已下载`);
+      const friendly = format === 'tiff-seq-fps' ? 'TIFF 序列 (FPS) (ZIP)' : format.toUpperCase();
+      alert(`渲染完成！${friendly} 文件已下载`);
     } catch (error) {
       console.error('Render failed:', error);
       alert('渲染失败: ' + (error as Error).message);
@@ -73,9 +89,16 @@ function App() {
           <button onClick={() => handleRender('tiff')} className="render-button">
             渲染 TIFF
           </button>
+          <button onClick={() => handleRender('tiff-seq-fps')} className="render-button">
+            渲染 TIFF 序列（按 FPS）
+          </button>
         </div>
       </div>
-      <SubtitleEditor config={config} onConfigChange={handleConfigChange} />
+      <SubtitleEditor
+        config={config}
+        onConfigChange={handleConfigChange}
+        onRenderParamsChange={setRenderParams}
+      />
     </div>
   );
 }

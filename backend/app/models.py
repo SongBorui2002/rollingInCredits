@@ -31,3 +31,38 @@ class PreviewResponse(BaseModel):
     preview_url: str
     render_time_ms: float
 
+
+class ScrollPreviewRequest(BaseModel):
+    """滚动预览请求：指定区段获取全分辨率切片"""
+    config: RenderConfig
+    y_start: int
+    chunk_height: int
+
+
+class ScrollPreviewResponse(BaseModel):
+    """滚动预览响应：返回区段 PNG 及总高度信息"""
+    preview_url: str
+    render_time_ms: float
+    total_height: int
+    y_start: int
+    chunk_height: int
+
+
+class ScrollFullPreviewResponse(BaseModel):
+    """完整长图预览响应"""
+    preview_url: str
+    render_time_ms: float
+    total_height: int
+
+
+class RenderSequenceRequest(BaseModel):
+    """
+    逐帧渲染请求：
+    - fps: 目标帧率
+    - duration_sec: 总时长（秒），与 scroll_speed 二选一，优先使用 duration
+    - scroll_speed: 滚动速度（px/s），当未提供 duration 时使用
+    """
+    config: RenderConfig
+    fps: float = 24.0
+    duration_sec: Optional[float] = None
+    scroll_speed: Optional[float] = None
