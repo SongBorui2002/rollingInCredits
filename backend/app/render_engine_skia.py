@@ -75,7 +75,7 @@ class RenderEngineSkia:
             self.default_en_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     
     def get_font(self, font_family: str, font_size: int, is_chinese: bool = False) -> skia.Font:
-        """获取 Skia 字体（带缓存）"""
+        """获取 Skia 字体（带缓存），启用亚像素定位以支持精确的亚像素偏移"""
         cache_key = f"{font_family}_{font_size}_{is_chinese}"
         if cache_key not in self.font_cache:
             try:
@@ -102,6 +102,35 @@ class RenderEngineSkia:
             
             # 创建 Skia Font 对象
             font = skia.Font(typeface, font_size)
+
+            # 严格配置 SkFont：关闭基线对齐 + 灰阶抗锯齿 + 无 hinting + 线性度量 + 亚像素
+            try:
+                # 1) 禁用基线对齐（Y 轴 snap）
+                if hasattr(font, "setBaselineSnap"):
+                    font.setBaselineSnap(False)
+
+                # 2) 使用标准灰阶抗锯齿（不能用 LCD 子像素）
+                if hasattr(font, "setEdging") and hasattr(skia.Font, "Edging"):
+                    font.setEdging(skia.Font.Edging.kAntiAlias)
+
+                # 3) 禁用 hinting
+                if hasattr(font, "setHinting"):
+                    if hasattr(skia, "FontHinting"):
+                        font.setHinting(skia.FontHinting.kNone)
+                    elif hasattr(skia.Font, "kNo_Hinting"):
+                        font.setHinting(skia.Font.kNo_Hinting)
+
+                # 4) 启用线性度量
+                if hasattr(font, "setLinearMetrics"):
+                    font.setLinearMetrics(True)
+
+                # 5) 启用亚像素定位
+                if hasattr(font, "setSubpixel"):
+                    font.setSubpixel(True)
+            except (AttributeError, TypeError):
+                # 如果 API 不支持，继续使用默认设置
+                pass
+
             self.font_cache[cache_key] = font
         return self.font_cache[cache_key]
     
@@ -278,12 +307,31 @@ class RenderEngineSkia:
         渲染单个字幕
         这是核心渲染逻辑，预览和最终渲染都使用这个方法
         支持中英文字体分离
+        注意：保持浮点坐标精度，禁用 hinting 以避免像素对齐
         """
         # 创建 Skia Paint 对象
         paint = skia.Paint(
             AntiAlias=True,  # 启用抗锯齿
             Style=skia.Paint.kFill_Style,
         )
+        
+        # 禁用字体 hinting，启用亚像素文本渲染，确保亚像素偏移能正确渲染
+        try:
+            # 禁用 Paint 层面的 hinting
+            if hasattr(skia.Paint, 'kNo_Hinting'):
+                paint.setHinting(skia.Paint.kNo_Hinting)
+            elif hasattr(skia, 'PaintHinting'):
+                paint.setHinting(skia.PaintHinting.kNone)
+            
+            # 启用亚像素文本渲染
+            if hasattr(paint, 'setSubpixelText'):
+                paint.setSubpixelText(True)
+            # 禁用 LCD 子像素渲染（可能影响对齐）
+            if hasattr(paint, 'setLCDRenderText'):
+                paint.setLCDRenderText(False)
+        except (AttributeError, TypeError):
+            # 如果 API 不支持，继续使用默认设置
+            pass
         
         # 设置颜色
         paint.setColor(skia.Color(
@@ -294,17 +342,19 @@ class RenderEngineSkia:
         
         # 处理多行文本
         lines = subtitle.text.split('\n')
-        y_offset = subtitle.y
+        # 保持 y_offset 为浮点数
+        y_offset = float(subtitle.y)
+        line_height = float(subtitle.font_size * subtitle.line_height)
         
         for line in lines:
             if not line.strip():
-                y_offset += int(subtitle.font_size * subtitle.line_height)
+                y_offset += line_height
                 continue
             
             # 处理字间距
             if subtitle.letter_spacing != 0:
                 # 逐字符渲染以实现字间距和中英文字体分离
-                x_offset = subtitle.x
+                x_offset = float(subtitle.x)
                 for char in line:
                     # 根据字符类型选择字体
                     is_cn = self.is_chinese_char(char)
@@ -313,8 +363,13 @@ class RenderEngineSkia:
                     else:
                         font = self.get_font(subtitle.font_family, subtitle.font_size, is_chinese=False)
                     
-                    # 使用 Skia 绘制文本
-                    canvas.drawString(char, x_offset, y_offset, font, paint)
+                    # 尝试使用 TextBlob 以获得更好的亚像素支持，fallback 到 drawString
+                    try:
+                        blob = skia.TextBlob(char, font)
+                        canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                    except (AttributeError, TypeError):
+                        # 如果 TextBlob 不可用，使用 drawString
+                        canvas.drawString(char, x_offset, y_offset, font, paint)
                     
                     # 获取字符宽度并添加字间距
                     char_width = font.measureText(char)  # 返回 float
@@ -322,7 +377,7 @@ class RenderEngineSkia:
             else:
                 # 正常渲染（无字间距，但需要处理中英文字体分离）
                 # 将文本按中英文分组
-                x_offset = subtitle.x
+                x_offset = float(subtitle.x)
                 current_segment = ""
                 current_is_cn = None
                 
@@ -337,7 +392,12 @@ class RenderEngineSkia:
                                 subtitle.font_size,
                                 is_chinese=current_is_cn
                             )
-                            canvas.drawString(current_segment, x_offset, y_offset, font, paint)
+                            # 尝试使用 TextBlob 以获得更好的亚像素支持
+                            try:
+                                blob = skia.TextBlob(current_segment, font)
+                                canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                            except (AttributeError, TypeError):
+                                canvas.drawString(current_segment, x_offset, y_offset, font, paint)
                             
                             # 计算已渲染文本的宽度
                             segment_width = font.measureText(current_segment)  # 返回 float
@@ -354,8 +414,13 @@ class RenderEngineSkia:
                         subtitle.font_size,
                         is_chinese=current_is_cn if current_is_cn is not None else False
                     )
-                    canvas.drawString(current_segment, x_offset, y_offset, font, paint)
+                    # 尝试使用 TextBlob 以获得更好的亚像素支持
+                    try:
+                        blob = skia.TextBlob(current_segment, font)
+                        canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                    except (AttributeError, TypeError):
+                        canvas.drawString(current_segment, x_offset, y_offset, font, paint)
             
-            # 移动到下一行
-            y_offset += int(subtitle.font_size * subtitle.line_height)
+            # 移动到下一行（保持浮点精度）
+            y_offset += line_height
 

@@ -81,7 +81,7 @@ class LongScrollRenderEngineSkia:
             self.default_en_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
     def get_font(self, font_family: str, font_size: int, is_chinese: bool = False) -> skia.Font:
-        """获取 Skia 字体（带缓存）"""
+        """获取 Skia 字体（带缓存），启用亚像素定位以支持精确的亚像素偏移"""
         cache_key = f"{font_family}_{font_size}_{is_chinese}"
         if cache_key not in self.font_cache:
             try:
@@ -105,6 +105,35 @@ class LongScrollRenderEngineSkia:
                         typeface = skia.Typeface.MakeDefault()
 
             font = skia.Font(typeface, font_size)
+
+            # 严格配置 SkFont：关闭基线对齐 + 灰阶抗锯齿 + 无 hinting + 线性度量 + 亚像素
+            try:
+                # 1) 禁用基线对齐（Y 轴 snap）
+                if hasattr(font, "setBaselineSnap"):
+                    font.setBaselineSnap(False)
+
+                # 2) 使用标准灰阶抗锯齿（不能用 LCD 子像素）
+                if hasattr(font, "setEdging") and hasattr(skia.Font, "Edging"):
+                    font.setEdging(skia.Font.Edging.kAntiAlias)
+
+                # 3) 禁用 hinting
+                if hasattr(font, "setHinting"):
+                    if hasattr(skia, "FontHinting"):
+                        font.setHinting(skia.FontHinting.kNone)
+                    elif hasattr(skia.Font, "kNo_Hinting"):
+                        font.setHinting(skia.Font.kNo_Hinting)
+
+                # 4) 启用线性度量
+                if hasattr(font, "setLinearMetrics"):
+                    font.setLinearMetrics(True)
+
+                # 5) 启用亚像素定位
+                if hasattr(font, "setSubpixel"):
+                    font.setSubpixel(True)
+            except (AttributeError, TypeError):
+                # 如果 API 不支持，继续使用默认设置
+                pass
+            
             self.font_cache[cache_key] = font
         return self.font_cache[cache_key]
 
@@ -220,9 +249,12 @@ class LongScrollRenderEngineSkia:
             pixels_per_frame = scroll_pixels / total_frames if total_frames > 0 else 0
 
         frame_paths: List[str] = []
+        prev_img: Optional[np.ndarray] = None
+        prev_y_start: Optional[float] = None
 
         for idx in range(total_frames):
             y_start = min(scroll_pixels, idx * pixels_per_frame)
+            # print(f"Frame {idx}: y_start = {y_start} (raw), {y_start:.10f} (precise)")
 
             surface = skia.Surface(config.width, config.height)
             canvas = surface.getCanvas()
@@ -236,6 +268,10 @@ class LongScrollRenderEngineSkia:
             canvas.save()
             canvas.translate(0, -y_start)
 
+            # # 验证变换矩阵
+            # matrix = canvas.getTotalMatrix()
+            # print(f"Frame {idx}: y_start={y_start}, matrix ty={matrix.getTranslateY()}")
+
             for subtitle in config.subtitles:
                 self._render_subtitle(canvas, subtitle, config.width, total_height)
 
@@ -246,6 +282,19 @@ class LongScrollRenderEngineSkia:
             img_array = np.frombuffer(pixels, dtype=np.uint8)
             img_array = img_array.reshape((config.height, config.width, 4))  # RGBA
             img_array = img_array[:, :, :3]  # RGB
+
+            # 调试：比较相邻两帧的像素差异，确认是否存在完全相同的帧
+            if prev_img is not None:
+                # 使用 int16 防止减法溢出
+                diff = np.abs(img_array.astype(np.int16) - prev_img.astype(np.int16))
+                max_diff = int(diff.max())
+                print(
+                    f"[DEBUG] Frame {idx-1}->{idx}: "
+                    f"y_start_prev={prev_y_start}, y_start_curr={y_start}, "
+                    f"max_rgb_diff={max_diff}"
+                )
+            prev_img = img_array.copy()
+            prev_y_start = y_start
 
             frame_name = f"frame_{idx:05d}.tiff"
             frame_path = os.path.join(target_dir, frame_name)
@@ -352,11 +401,31 @@ class LongScrollRenderEngineSkia:
                          canvas_width: int, canvas_height: int):
         """
         渲染单个字幕；逻辑与 RenderEngineSkia 保持一致，支持中英文字体分离与字距。
+        注意：保持浮点坐标精度，禁用 hinting 以避免像素对齐导致的重复帧问题。
         """
         paint = skia.Paint(
             AntiAlias=True,
             Style=skia.Paint.kFill_Style,
         )
+
+        # 禁用字体 hinting，启用亚像素文本渲染，确保亚像素偏移能正确渲染
+        # 这可以防止文本被对齐到整数像素，导致 0.5px/frame 时出现重复帧
+        try:
+            # 禁用 Paint 层面的 hinting
+            if hasattr(skia.Paint, 'kNo_Hinting'):
+                paint.setHinting(skia.Paint.kNo_Hinting)
+            elif hasattr(skia, 'PaintHinting'):
+                paint.setHinting(skia.PaintHinting.kNone)
+            
+            # 启用亚像素文本渲染
+            if hasattr(paint, 'setSubpixelText'):
+                paint.setSubpixelText(True)
+            # 禁用 LCD 子像素渲染（可能影响对齐）
+            if hasattr(paint, 'setLCDRenderText'):
+                paint.setLCDRenderText(False)
+        except (AttributeError, TypeError):
+            # 如果 API 不支持，继续使用默认设置
+            pass
 
         paint.setColor(skia.Color(
             subtitle.color[0],
@@ -365,15 +434,17 @@ class LongScrollRenderEngineSkia:
         ))
 
         lines = subtitle.text.split('\n')
-        y_offset = subtitle.y
+        # 保持 y_offset 为浮点数，不要强制取整
+        y_offset = float(subtitle.y)
+        line_height = float(subtitle.font_size * subtitle.line_height)
 
         for line in lines:
             if not line.strip():
-                y_offset += int(subtitle.font_size * subtitle.line_height)
+                y_offset += line_height
                 continue
 
             if subtitle.letter_spacing != 0:
-                x_offset = subtitle.x
+                x_offset = float(subtitle.x)
                 for char in line:
                     is_cn = self.is_chinese_char(char)
                     if is_cn and subtitle.font_family_cn:
@@ -381,12 +452,18 @@ class LongScrollRenderEngineSkia:
                     else:
                         font = self.get_font(subtitle.font_family, subtitle.font_size, is_chinese=False)
 
-                    canvas.drawString(char, x_offset, y_offset, font, paint)
+                    # 尝试使用 TextBlob 以获得更好的亚像素支持，fallback 到 drawString
+                    try:
+                        blob = skia.TextBlob(char, font)
+                        canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                    except (AttributeError, TypeError):
+                        # 如果 TextBlob 不可用，使用 drawString
+                        canvas.drawString(char, x_offset, y_offset, font, paint)
 
                     char_width = font.measureText(char)
                     x_offset += char_width + subtitle.letter_spacing
             else:
-                x_offset = subtitle.x
+                x_offset = float(subtitle.x)
                 current_segment = ""
                 current_is_cn = None
 
@@ -400,7 +477,12 @@ class LongScrollRenderEngineSkia:
                                 subtitle.font_size,
                                 is_chinese=current_is_cn,
                             )
-                            canvas.drawString(current_segment, x_offset, y_offset, font, paint)
+                            # 尝试使用 TextBlob 以获得更好的亚像素支持
+                            try:
+                                blob = skia.TextBlob(current_segment, font)
+                                canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                            except (AttributeError, TypeError):
+                                canvas.drawString(current_segment, x_offset, y_offset, font, paint)
                             segment_width = font.measureText(current_segment)
                             x_offset += segment_width
                         current_segment = ""
@@ -414,7 +496,13 @@ class LongScrollRenderEngineSkia:
                         subtitle.font_size,
                         is_chinese=current_is_cn if current_is_cn is not None else False,
                     )
-                    canvas.drawString(current_segment, x_offset, y_offset, font, paint)
+                    # 尝试使用 TextBlob 以获得更好的亚像素支持
+                    try:
+                        blob = skia.TextBlob(current_segment, font)
+                        canvas.drawTextBlob(blob, x_offset, y_offset, paint)
+                    except (AttributeError, TypeError):
+                        canvas.drawString(current_segment, x_offset, y_offset, font, paint)
 
-            y_offset += int(subtitle.font_size * subtitle.line_height)
+            # 保持浮点精度，不要取整
+            y_offset += line_height
 
