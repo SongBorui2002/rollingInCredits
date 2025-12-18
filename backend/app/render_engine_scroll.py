@@ -34,6 +34,9 @@ class LongScrollRenderEngineSkia:
     def __init__(self):
         self.font_cache = {}
         self._init_default_fonts()
+        # 字体渲染配置（用于"确保没有滚动"模式）
+        self.enable_baseline_snap = False
+        self.enable_hinting = False
 
     # ---- 字体管理 ----
     def _init_default_fonts(self):
@@ -81,8 +84,9 @@ class LongScrollRenderEngineSkia:
             self.default_en_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
     def get_font(self, font_family: str, font_size: int, is_chinese: bool = False) -> skia.Font:
-        """获取 Skia 字体（带缓存），启用亚像素定位以支持精确的亚像素偏移"""
-        cache_key = f"{font_family}_{font_size}_{is_chinese}"
+        """获取 Skia 字体（带缓存），根据配置启用/禁用 Baseline Snapping 和 Hinting"""
+        # 将字体配置也加入缓存键，因为不同配置需要不同的字体对象
+        cache_key = f"{font_family}_{font_size}_{is_chinese}_{self.enable_baseline_snap}_{self.enable_hinting}"
         if cache_key not in self.font_cache:
             try:
                 typeface = skia.Typeface.MakeFromFile(font_family)
@@ -106,22 +110,30 @@ class LongScrollRenderEngineSkia:
 
             font = skia.Font(typeface, font_size)
 
-            # 严格配置 SkFont：关闭基线对齐 + 灰阶抗锯齿 + 无 hinting + 线性度量 + 亚像素
+            # 根据配置设置字体属性
             try:
-                # 1) 禁用基线对齐（Y 轴 snap）
+                # 1) 基线对齐（Y 轴 snap）- 根据配置开启/关闭
                 if hasattr(font, "setBaselineSnap"):
-                    font.setBaselineSnap(False)
+                    font.setBaselineSnap(self.enable_baseline_snap)
 
                 # 2) 使用标准灰阶抗锯齿（不能用 LCD 子像素）
                 if hasattr(font, "setEdging") and hasattr(skia.Font, "Edging"):
                     font.setEdging(skia.Font.Edging.kAntiAlias)
 
-                # 3) 禁用 hinting
+                # 3) Hinting - 根据配置开启/关闭
                 if hasattr(font, "setHinting"):
-                    if hasattr(skia, "FontHinting"):
-                        font.setHinting(skia.FontHinting.kNone)
-                    elif hasattr(skia.Font, "kNo_Hinting"):
-                        font.setHinting(skia.Font.kNo_Hinting)
+                    if self.enable_hinting:
+                        # 开启 hinting
+                        if hasattr(skia, "FontHinting"):
+                            font.setHinting(skia.FontHinting.kNormal)
+                        elif hasattr(skia.Font, "kNormal_Hinting"):
+                            font.setHinting(skia.Font.kNormal_Hinting)
+                    else:
+                        # 禁用 hinting
+                        if hasattr(skia, "FontHinting"):
+                            font.setHinting(skia.FontHinting.kNone)
+                        elif hasattr(skia.Font, "kNo_Hinting"):
+                            font.setHinting(skia.Font.kNo_Hinting)
 
                 # 4) 启用线性度量
                 if hasattr(font, "setLinearMetrics"):
@@ -181,38 +193,59 @@ class LongScrollRenderEngineSkia:
         - total_height （方便前端了解整条长图高度）
         """
         start_time = time.time()
-        total_height = total_height or self.calculate_total_height(config)
+        
+        # 保存原始配置，以便后续恢复
+        original_baseline_snap = self.enable_baseline_snap
+        original_hinting = self.enable_hinting
+        
+        # 如果启用"确保没有抖动"，开启 Baseline Snapping 和 Hinting
+        if config.ensure_no_scroll:
+            self.enable_baseline_snap = True
+            self.enable_hinting = True
+            # 清空字体缓存，因为配置改变了
+            self.font_cache.clear()
+        else:
+            self.enable_baseline_snap = False
+            self.enable_hinting = False
+        
+        try:
+            total_height = total_height or self.calculate_total_height(config)
 
-        # 如果请求超出范围，返回空白块
-        if y_start >= total_height:
+            # 如果请求超出范围，返回空白块
+            if y_start >= total_height:
+                surface = skia.Surface(config.width, chunk_height)
+                png_data = surface.makeImageSnapshot().encodeToData(skia.EncodedImageFormat.kPNG, 100)
+                return bytes(png_data), (time.time() - start_time) * 1000, total_height
+
             surface = skia.Surface(config.width, chunk_height)
-            png_data = surface.makeImageSnapshot().encodeToData(skia.EncodedImageFormat.kPNG, 100)
-            return bytes(png_data), (time.time() - start_time) * 1000, total_height
+            canvas = surface.getCanvas()
 
-        surface = skia.Surface(config.width, chunk_height)
-        canvas = surface.getCanvas()
+            # 背景
+            canvas.clear(skia.Color(
+                config.background_color[0],
+                config.background_color[1],
+                config.background_color[2],
+            ))
 
-        # 背景
-        canvas.clear(skia.Color(
-            config.background_color[0],
-            config.background_color[1],
-            config.background_color[2],
-        ))
+            # 将画布上移 y_start，使得只绘制该区段可见部分
+            canvas.save()
+            canvas.translate(0, -y_start)
 
-        # 将画布上移 y_start，使得只绘制该区段可见部分
-        canvas.save()
-        canvas.translate(0, -y_start)
+            for subtitle in config.subtitles:
+                self._render_subtitle(canvas, subtitle, config.width, total_height)
 
-        for subtitle in config.subtitles:
-            self._render_subtitle(canvas, subtitle, config.width, total_height)
+            canvas.restore()
 
-        canvas.restore()
-
-        # 输出 PNG
-        image = surface.makeImageSnapshot()
-        png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
-        render_time = (time.time() - start_time) * 1000
-        return bytes(png_data), render_time, total_height
+            # 输出 PNG
+            image = surface.makeImageSnapshot()
+            png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
+            render_time = (time.time() - start_time) * 1000
+            return bytes(png_data), render_time, total_height
+        finally:
+            # 恢复原始字体配置
+            self.enable_baseline_snap = original_baseline_snap
+            self.enable_hinting = original_hinting
+            self.font_cache.clear()
 
     def render_tiff_sequence_timebased(
         self,
@@ -224,12 +257,27 @@ class LongScrollRenderEngineSkia:
         - 给定 fps 和 duration_sec 或 scroll_speed(px/s)
         - 每帧 y 偏移 = frameIndex * pixelsPerFrame
         - 帧尺寸固定：width=config.width, height=config.height
+        - 支持"确保没有滚动"模式：开启 Baseline Snapping 和 Hinting，并取整 px/frame
         返回：帧路径列表、耗时 ms、总高度、总帧数
         """
         start_time = time.time()
         config = req.config
         target_dir = output_dir or BASE_TEMP_DIR
         os.makedirs(target_dir, exist_ok=True)
+
+        # 保存原始配置，以便后续恢复
+        original_baseline_snap = self.enable_baseline_snap
+        original_hinting = self.enable_hinting
+        
+        # 如果启用"确保没有滚动"，开启 Baseline Snapping 和 Hinting
+        if req.ensure_no_scroll:
+            self.enable_baseline_snap = True
+            self.enable_hinting = True
+            # 清空字体缓存，因为配置改变了
+            self.font_cache.clear()
+        else:
+            self.enable_baseline_snap = False
+            self.enable_hinting = False
 
         total_height = self.calculate_total_height(config)
         scroll_pixels = max(0, total_height - config.height)
@@ -248,15 +296,212 @@ class LongScrollRenderEngineSkia:
             total_frames = max(1, math.ceil(total_height / config.height))
             pixels_per_frame = scroll_pixels / total_frames if total_frames > 0 else 0
 
-        frame_paths: List[str] = []
-        prev_img: Optional[np.ndarray] = None
-        prev_y_start: Optional[float] = None
+        # 如果启用"确保没有抖动"，进行取整处理
+        original_pixels_per_frame = pixels_per_frame
+        original_total_frames = total_frames
+        original_total_height = total_height
+        original_scroll_pixels = scroll_pixels
+        adjusted_config = config
+        
+        if req.ensure_no_scroll and req.optimization_mode:
+            # 取整处理：确保至少为 1px/frame，避免为 0
+            pixels_per_frame_rounded = max(1, round(pixels_per_frame))
+            
+            print(f"[优化] 原始 px/frame={original_pixels_per_frame:.6f}, 取整后={pixels_per_frame_rounded}")
+            
+            if req.optimization_mode == 'layout':
+                # 排版优先：直接取整，重新计算总帧数
+                pixels_per_frame = pixels_per_frame_rounded
+                if pixels_per_frame > 0:
+                    total_frames = max(1, math.ceil(scroll_pixels / pixels_per_frame))
+                    # 重新计算实际的 scroll_pixels，确保最后一帧能完整显示
+                    scroll_pixels = (total_frames - 1) * pixels_per_frame
+                else:
+                    total_frames = 1
+                    pixels_per_frame = 0
+                
+                print(f"[优化-排版优先] px/frame={pixels_per_frame}, 总帧数={total_frames}, scroll_pixels={scroll_pixels}")
+                
+            elif req.optimization_mode == 'duration':
+                # 时长优先：取整但保持总帧数不变，通过调整行间距补偿
+                pixels_per_frame = pixels_per_frame_rounded
+                
+                # 计算目标总滚动距离
+                target_total_scroll = pixels_per_frame * total_frames
+                # 计算需要调整的滚动距离差异
+                scroll_diff = target_total_scroll - original_scroll_pixels
+                
+                print(f"[优化-时长优先] 原始 scroll_pixels={original_scroll_pixels:.2f}, "
+                      f"目标 scroll_pixels={target_total_scroll:.2f}, 差异={scroll_diff:.2f}px")
+                
+                if abs(scroll_diff) > 0.01:  # 如果差异足够大才调整
+                    # 计算新的目标总高度
+                    target_total_height = original_total_height + scroll_diff
+                    
+                    # 计算所有字幕块的总高度（不包括空白区域）
+                    total_subtitle_height = 0
+                    for subtitle in config.subtitles:
+                        lines = subtitle.text.split("\n")
+                        block_height = 0
+                        for line in lines:
+                            if line.strip():
+                                block_height += subtitle.font_size * subtitle.line_height
+                        # 计算这个字幕块的底部位置
+                        subtitle_bottom = subtitle.y + block_height
+                        total_subtitle_height = max(total_subtitle_height, subtitle_bottom)
+                    
+                    # 计算可调整的行间距总高度（字幕内容部分）
+                    # 原始字幕内容高度 = total_subtitle_height
+                    # 原始总高度 = original_total_height
+                    # 需要增加的高度 = scroll_diff
+                    
+                    if total_subtitle_height > 0:
+                        # 计算调整比例：新高度 / 原高度
+                        height_ratio = (total_subtitle_height + scroll_diff) / total_subtitle_height if total_subtitle_height > 0 else 1.0
+                        
+                        # 确保比例合理（不能太小或太大）
+                        height_ratio = max(0.5, min(2.0, height_ratio))
+                        
+                        # 创建调整后的配置副本
+                        from copy import deepcopy
+                        adjusted_config = deepcopy(config)
+                        
+                        # 按比例调整所有字幕的行间距
+                        for subtitle in adjusted_config.subtitles:
+                            subtitle.line_height = subtitle.line_height * height_ratio
+                        
+                        # 重新计算总高度
+                        total_height = self.calculate_total_height(adjusted_config)
+                        scroll_pixels = max(0, total_height - config.height)
+                        
+                        # 验证：确保新的 scroll_pixels 接近目标值
+                        actual_scroll_diff = scroll_pixels - original_scroll_pixels
+                        print(f"[优化-时长优先] 行间距调整比例={height_ratio:.4f}, "
+                              f"新总高度={total_height:.2f}, 新 scroll_pixels={scroll_pixels:.2f}, "
+                              f"实际差异={actual_scroll_diff:.2f}px")
+                    else:
+                        print(f"[优化-时长优先] 警告：无法计算字幕高度，跳过行间距调整")
+                else:
+                    print(f"[优化-时长优先] 差异太小，无需调整行间距")
 
-        for idx in range(total_frames):
-            y_start = min(scroll_pixels, idx * pixels_per_frame)
-            # print(f"Frame {idx}: y_start = {y_start} (raw), {y_start:.10f} (precise)")
+        try:
+            frame_paths: List[str] = []
+            prev_img: Optional[np.ndarray] = None
+            prev_y_start: Optional[int] = None
 
-            surface = skia.Surface(config.width, config.height)
+            print(f"[渲染开始] 总帧数={total_frames}, px/frame={pixels_per_frame:.4f}, scroll_pixels={scroll_pixels:.2f}")
+
+            for idx in range(total_frames):
+                # 计算当前帧的 y_start，确保是整数像素（避免亚像素偏移导致重复帧）
+                y_start_float = idx * pixels_per_frame
+                y_start = int(round(y_start_float))
+                y_start = min(int(scroll_pixels), y_start)  # 确保不超过最大滚动距离
+                
+                # 确保每帧的 y_start 至少比前一帧大 1 像素（如果可能）
+                if idx > 0 and prev_y_start is not None:
+                    if y_start <= prev_y_start:
+                        y_start = prev_y_start + 1
+                        y_start = min(int(scroll_pixels), y_start)
+                        if y_start > scroll_pixels:
+                            # 如果已经到达底部，停止渲染
+                            print(f"[渲染] 警告：Frame {idx} 已到达底部，停止渲染")
+                            break
+                
+                # 调试信息（前5帧和最后1帧）
+                if idx < 5 or idx == total_frames - 1 or (idx % 100 == 0):
+                    print(f"[渲染] Frame {idx}: y_start={y_start} (px/frame={pixels_per_frame:.4f}, 计算值={y_start_float:.4f})")
+
+                surface = skia.Surface(config.width, config.height)
+                canvas = surface.getCanvas()
+
+                canvas.clear(skia.Color(
+                    config.background_color[0],
+                    config.background_color[1],
+                    config.background_color[2],
+                ))
+
+                canvas.save()
+                canvas.translate(0, -float(y_start))  # 使用浮点数以确保精度
+
+                # # 验证变换矩阵
+                # matrix = canvas.getTotalMatrix()
+                # print(f"Frame {idx}: y_start={y_start}, matrix ty={matrix.getTranslateY()}")
+
+                for subtitle in adjusted_config.subtitles:
+                    self._render_subtitle(canvas, subtitle, config.width, total_height)
+
+                canvas.restore()
+
+                image = surface.makeImageSnapshot()
+                pixels = image.tobytes()
+                img_array = np.frombuffer(pixels, dtype=np.uint8)
+                img_array = img_array.reshape((config.height, config.width, 4))  # RGBA
+                img_array = img_array[:, :, :3]  # RGB
+
+                # 调试：比较相邻两帧的像素差异，确认是否存在完全相同的帧
+                if prev_img is not None and prev_y_start is not None:
+                    # 使用 int16 防止减法溢出
+                    diff = np.abs(img_array.astype(np.int16) - prev_img.astype(np.int16))
+                    max_diff = int(diff.max())
+                    y_diff = y_start - prev_y_start
+                    
+                    # 只在有差异或前几帧时打印
+                    if max_diff == 0 or idx < 5:
+                        print(
+                            f"[帧差异] Frame {idx-1}->{idx}: "
+                            f"y_start_prev={prev_y_start}, y_start_curr={y_start}, y_diff={y_diff}, "
+                            f"max_rgb_diff={max_diff}"
+                        )
+                        if max_diff == 0 and y_diff > 0:
+                            print(f"[警告] Frame {idx-1} 和 {idx} 完全相同，但 y_start 不同！")
+                prev_img = img_array.copy()
+                prev_y_start = y_start
+
+                frame_name = f"frame_{idx:05d}.tiff"
+                frame_path = os.path.join(target_dir, frame_name)
+
+                spec = oiio.ImageSpec(config.width, config.height, 3, oiio.UINT8)
+                buf = oiio.ImageBuf(spec)
+                buf.set_pixels(oiio.ROI(0, config.width, 0, config.height, 0, 1, 0, 3), img_array)
+                buf.write(frame_path)
+
+                frame_paths.append(frame_path)
+
+            render_time = (time.time() - start_time) * 1000
+            
+            return frame_paths, render_time, total_height, total_frames
+        finally:
+            # 恢复原始字体配置（无论成功还是异常）
+            self.enable_baseline_snap = original_baseline_snap
+            self.enable_hinting = original_hinting
+            # 清空字体缓存，恢复默认配置
+            self.font_cache.clear()
+
+    def render_full_png(self, config: RenderConfig) -> Tuple[bytes, float, int]:
+        """
+        渲染完整长图（全分辨率）
+        返回：PNG bytes, 渲染时间 ms, 总高度
+        """
+        start_time = time.time()
+        
+        # 保存原始配置，以便后续恢复
+        original_baseline_snap = self.enable_baseline_snap
+        original_hinting = self.enable_hinting
+        
+        # 如果启用"确保没有抖动"，开启 Baseline Snapping 和 Hinting
+        if config.ensure_no_scroll:
+            self.enable_baseline_snap = True
+            self.enable_hinting = True
+            # 清空字体缓存，因为配置改变了
+            self.font_cache.clear()
+        else:
+            self.enable_baseline_snap = False
+            self.enable_hinting = False
+        
+        try:
+            total_height = self.calculate_total_height(config)
+
+            surface = skia.Surface(config.width, total_height)
             canvas = surface.getCanvas()
 
             canvas.clear(skia.Color(
@@ -265,74 +510,18 @@ class LongScrollRenderEngineSkia:
                 config.background_color[2],
             ))
 
-            canvas.save()
-            canvas.translate(0, -y_start)
-
-            # # 验证变换矩阵
-            # matrix = canvas.getTotalMatrix()
-            # print(f"Frame {idx}: y_start={y_start}, matrix ty={matrix.getTranslateY()}")
-
             for subtitle in config.subtitles:
                 self._render_subtitle(canvas, subtitle, config.width, total_height)
 
-            canvas.restore()
-
             image = surface.makeImageSnapshot()
-            pixels = image.tobytes()
-            img_array = np.frombuffer(pixels, dtype=np.uint8)
-            img_array = img_array.reshape((config.height, config.width, 4))  # RGBA
-            img_array = img_array[:, :, :3]  # RGB
-
-            # 调试：比较相邻两帧的像素差异，确认是否存在完全相同的帧
-            if prev_img is not None:
-                # 使用 int16 防止减法溢出
-                diff = np.abs(img_array.astype(np.int16) - prev_img.astype(np.int16))
-                max_diff = int(diff.max())
-                print(
-                    f"[DEBUG] Frame {idx-1}->{idx}: "
-                    f"y_start_prev={prev_y_start}, y_start_curr={y_start}, "
-                    f"max_rgb_diff={max_diff}"
-                )
-            prev_img = img_array.copy()
-            prev_y_start = y_start
-
-            frame_name = f"frame_{idx:05d}.tiff"
-            frame_path = os.path.join(target_dir, frame_name)
-
-            spec = oiio.ImageSpec(config.width, config.height, 3, oiio.UINT8)
-            buf = oiio.ImageBuf(spec)
-            buf.set_pixels(oiio.ROI(0, config.width, 0, config.height, 0, 1, 0, 3), img_array)
-            buf.write(frame_path)
-
-            frame_paths.append(frame_path)
-
-        render_time = (time.time() - start_time) * 1000
-        return frame_paths, render_time, total_height, total_frames
-
-    def render_full_png(self, config: RenderConfig) -> Tuple[bytes, float, int]:
-        """
-        渲染完整长图（全分辨率）
-        返回：PNG bytes, 渲染时间 ms, 总高度
-        """
-        start_time = time.time()
-        total_height = self.calculate_total_height(config)
-
-        surface = skia.Surface(config.width, total_height)
-        canvas = surface.getCanvas()
-
-        canvas.clear(skia.Color(
-            config.background_color[0],
-            config.background_color[1],
-            config.background_color[2],
-        ))
-
-        for subtitle in config.subtitles:
-            self._render_subtitle(canvas, subtitle, config.width, total_height)
-
-        image = surface.makeImageSnapshot()
-        png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
-        render_time = (time.time() - start_time) * 1000
-        return bytes(png_data), render_time, total_height
+            png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
+            render_time = (time.time() - start_time) * 1000
+            return bytes(png_data), render_time, total_height
+        finally:
+            # 恢复原始字体配置
+            self.enable_baseline_snap = original_baseline_snap
+            self.enable_hinting = original_hinting
+            self.font_cache.clear()
 
     def render_tiff_sequence(
         self,

@@ -27,6 +27,9 @@ class RenderEngineSkia:
     def __init__(self):
         self.font_cache = {}
         self._init_default_fonts()
+        # 字体渲染配置（用于"确保没有滚动"模式）
+        self.enable_baseline_snap = False
+        self.enable_hinting = False
     
     def _init_default_fonts(self):
         """初始化默认字体路径"""
@@ -75,8 +78,9 @@ class RenderEngineSkia:
             self.default_en_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     
     def get_font(self, font_family: str, font_size: int, is_chinese: bool = False) -> skia.Font:
-        """获取 Skia 字体（带缓存），启用亚像素定位以支持精确的亚像素偏移"""
-        cache_key = f"{font_family}_{font_size}_{is_chinese}"
+        """获取 Skia 字体（带缓存），根据配置启用/禁用 Baseline Snapping 和 Hinting"""
+        # 将字体配置也加入缓存键，因为不同配置需要不同的字体对象
+        cache_key = f"{font_family}_{font_size}_{is_chinese}_{self.enable_baseline_snap}_{self.enable_hinting}"
         if cache_key not in self.font_cache:
             try:
                 # 尝试加载指定字体
@@ -103,22 +107,30 @@ class RenderEngineSkia:
             # 创建 Skia Font 对象
             font = skia.Font(typeface, font_size)
 
-            # 严格配置 SkFont：关闭基线对齐 + 灰阶抗锯齿 + 无 hinting + 线性度量 + 亚像素
+            # 根据配置设置字体属性
             try:
-                # 1) 禁用基线对齐（Y 轴 snap）
+                # 1) 基线对齐（Y 轴 snap）- 根据配置开启/关闭
                 if hasattr(font, "setBaselineSnap"):
-                    font.setBaselineSnap(False)
+                    font.setBaselineSnap(self.enable_baseline_snap)
 
                 # 2) 使用标准灰阶抗锯齿（不能用 LCD 子像素）
                 if hasattr(font, "setEdging") and hasattr(skia.Font, "Edging"):
                     font.setEdging(skia.Font.Edging.kAntiAlias)
 
-                # 3) 禁用 hinting
+                # 3) Hinting - 根据配置开启/关闭
                 if hasattr(font, "setHinting"):
-                    if hasattr(skia, "FontHinting"):
-                        font.setHinting(skia.FontHinting.kNone)
-                    elif hasattr(skia.Font, "kNo_Hinting"):
-                        font.setHinting(skia.Font.kNo_Hinting)
+                    if self.enable_hinting:
+                        # 开启 hinting
+                        if hasattr(skia, "FontHinting"):
+                            font.setHinting(skia.FontHinting.kNormal)
+                        elif hasattr(skia.Font, "kNormal_Hinting"):
+                            font.setHinting(skia.Font.kNormal_Hinting)
+                    else:
+                        # 禁用 hinting
+                        if hasattr(skia, "FontHinting"):
+                            font.setHinting(skia.FontHinting.kNone)
+                        elif hasattr(skia.Font, "kNo_Hinting"):
+                            font.setHinting(skia.Font.kNo_Hinting)
 
                 # 4) 启用线性度量
                 if hasattr(font, "setLinearMetrics"):
@@ -146,39 +158,59 @@ class RenderEngineSkia:
         """
         start_time = time.time()
         
-        # 预览模式降采样，提高渲染速度
-        preview_scale = config.preview_scale if config.preview else 1.0
-        preview_scale = max(0.1, min(1.0, preview_scale))
-        surface_width = max(1, int(config.width * preview_scale))
-        surface_height = max(1, int(config.height * preview_scale))
+        # 保存原始配置，以便后续恢复
+        original_baseline_snap = self.enable_baseline_snap
+        original_hinting = self.enable_hinting
         
-        # 使用 Skia 渲染
-        surface = skia.Surface(surface_width, surface_height)
-        canvas = surface.getCanvas()
+        # 如果启用"确保没有抖动"，开启 Baseline Snapping 和 Hinting
+        if config.ensure_no_scroll:
+            self.enable_baseline_snap = True
+            self.enable_hinting = True
+            # 清空字体缓存，因为配置改变了
+            self.font_cache.clear()
+        else:
+            self.enable_baseline_snap = False
+            self.enable_hinting = False
         
-        # 缩放画布，保持逻辑坐标仍为原始分辨率
-        if preview_scale != 1.0:
-            canvas.scale(preview_scale, preview_scale)
-        
-        # 设置背景色
-        canvas.clear(skia.Color(
-            config.background_color[0],
-            config.background_color[1],
-            config.background_color[2]
-        ))
-        
-        # 渲染每个字幕
-        for subtitle in config.subtitles:
-            self._render_subtitle(canvas, subtitle, config.width, config.height)
-        
-        # 转换为 PNG
-        image = surface.makeImageSnapshot()
-        # encodeToData 需要格式和质量参数，或者无参数（自动检测）
-        png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
-        
-        render_time = (time.time() - start_time) * 1000  # 转换为毫秒
-        
-        return bytes(png_data), render_time
+        try:
+            # 预览模式降采样，提高渲染速度
+            preview_scale = config.preview_scale if config.preview else 1.0
+            preview_scale = max(0.1, min(1.0, preview_scale))
+            surface_width = max(1, int(config.width * preview_scale))
+            surface_height = max(1, int(config.height * preview_scale))
+            
+            # 使用 Skia 渲染
+            surface = skia.Surface(surface_width, surface_height)
+            canvas = surface.getCanvas()
+            
+            # 缩放画布，保持逻辑坐标仍为原始分辨率
+            if preview_scale != 1.0:
+                canvas.scale(preview_scale, preview_scale)
+            
+            # 设置背景色
+            canvas.clear(skia.Color(
+                config.background_color[0],
+                config.background_color[1],
+                config.background_color[2]
+            ))
+            
+            # 渲染每个字幕
+            for subtitle in config.subtitles:
+                self._render_subtitle(canvas, subtitle, config.width, config.height)
+            
+            # 转换为 PNG
+            image = surface.makeImageSnapshot()
+            # encodeToData 需要格式和质量参数，或者无参数（自动检测）
+            png_data = image.encodeToData(skia.EncodedImageFormat.kPNG, 100)
+            
+            render_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            
+            return bytes(png_data), render_time
+        finally:
+            # 恢复原始字体配置
+            self.enable_baseline_snap = original_baseline_snap
+            self.enable_hinting = original_hinting
+            self.font_cache.clear()
     
     def render_final_dpx(self, config: RenderConfig) -> Tuple[bytes, float]:
         """

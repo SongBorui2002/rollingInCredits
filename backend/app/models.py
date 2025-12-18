@@ -24,6 +24,8 @@ class RenderConfig(BaseModel):
     background_color: Tuple[int, int, int] = (0, 0, 0)  # RGB
     preview: bool = False  # 是否为预览模式
     preview_scale: float = 1.0  # 预览模式下的分辨率缩放
+    ensure_no_scroll: Optional[bool] = False  # 确保没有抖动（开启 Baseline Snapping 和 Hinting）
+    optimization_mode: Optional[str] = None  # 优化模式，'duration' 时长优先，'layout' 排版优先
 
 
 class PreviewResponse(BaseModel):
@@ -61,8 +63,12 @@ class RenderSequenceRequest(BaseModel):
     - fps: 目标帧率
     - duration_sec: 总时长（秒），与 scroll_speed 二选一，优先使用 duration
     - scroll_speed: 滚动速度（px/s），当未提供 duration 时使用
+    - ensure_no_scroll: 确保没有滚动（开启 Baseline Snapping 和 Hinting）
+    - optimization_mode: 优化模式，'duration' 时长优先，'layout' 排版优先
     """
     config: RenderConfig
     fps: float = 24.0
     duration_sec: Optional[float] = None
     scroll_speed: Optional[float] = None
+    ensure_no_scroll: Optional[bool] = False
+    optimization_mode: Optional[str] = None  # 'duration' or 'layout'

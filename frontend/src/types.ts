@@ -18,6 +18,8 @@ export interface RenderConfig {
   background_color: [number, number, number];
   preview: boolean;
   preview_scale?: number;
+  ensure_no_scroll?: boolean; // 确保没有抖动（开启 Baseline Snapping 和 Hinting）
+  optimization_mode?: 'duration' | 'layout' | null; // 优化模式：'duration' 时长优先，'layout' 排版优先
 }
 
 export interface PreviewResponse {
@@ -56,5 +58,7 @@ export interface RenderSequenceRequest {
   fps: number; // 目标帧率
   duration_sec?: number | null; // 总时长（秒），与 scroll_speed 二选一，优先 duration
   scroll_speed?: number | null; // 滚动速度（px/s），当未提供 duration 时使用
+  ensure_no_scroll?: boolean; // 确保没有滚动（开启 Baseline Snapping 和 Hinting）
+  optimization_mode?: 'duration' | 'layout' | null; // 优化模式：'duration' 时长优先，'layout' 排版优先
 }
 

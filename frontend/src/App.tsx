@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import SubtitleEditor from './components/SubtitleEditor';
-import { RenderConfig, SubtitleItem } from './types';
+import { RenderConfig } from './types';
 import { renderDPX, renderTIFF, renderTiffSequenceFps } from './api';
 import './App.css';
 
@@ -47,6 +47,8 @@ function App() {
     scrollMode: 'speed' as 'speed' | 'duration',
     scrollSpeed: 200,
     totalDurationSec: 20,
+    ensureNoScroll: false,
+    optimizationMode: null as 'duration' | 'layout' | null,
   });
 
   const handleRender = async (format: 'dpx' | 'tiff' | 'tiff-seq-fps') => {
@@ -60,6 +62,8 @@ function App() {
               fps: renderParams.fps,
               duration_sec: renderParams.scrollMode === 'duration' ? renderParams.totalDurationSec : null,
               scroll_speed: renderParams.scrollMode === 'speed' ? renderParams.scrollSpeed : null,
+              ensure_no_scroll: renderParams.ensureNoScroll || undefined,
+              optimization_mode: renderParams.optimizationMode || undefined,
             });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

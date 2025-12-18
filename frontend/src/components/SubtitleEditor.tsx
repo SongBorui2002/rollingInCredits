@@ -21,6 +21,8 @@ interface SubtitleEditorProps {
     scrollMode: 'speed' | 'duration';
     scrollSpeed: number;
     totalDurationSec: number;
+    ensureNoScroll: boolean;
+    optimizationMode: 'duration' | 'layout' | null;
   }) => void;
 }
 
@@ -46,6 +48,8 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
   const [fps, setFps] = useState<FrameRate>(24); // 默认 24fps
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [actualFps, setActualFps] = useState<number>(0);
+  const [ensureNoScroll, setEnsureNoScroll] = useState(false);
+  const [optimizationMode, setOptimizationMode] = useState<'duration' | 'layout' | null>(null);
   const lastFrameRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   // Fixed timestep 相关
@@ -78,6 +82,8 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
           ...debouncedConfig,
           preview: true,
           preview_scale: previewScale,
+          ensure_no_scroll: ensureNoScroll || undefined,
+          optimization_mode: optimizationMode || undefined,
         });
         setPreviewUrl(response.preview_url);
         setRenderTime(response.render_time_ms);
@@ -89,7 +95,7 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
     };
 
     requestPreview();
-  }, [debouncedConfig, previewScale]);
+  }, [debouncedConfig, previewScale, ensureNoScroll, optimizationMode]);
 
   // 请求全分辨率完整长图（一次性），配置变更时刷新
   useEffect(() => {
@@ -100,6 +106,8 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
           ...debouncedConfigForFull,
           preview: false,
           preview_scale: 1,
+          ensure_no_scroll: ensureNoScroll || undefined,
+          optimization_mode: optimizationMode || undefined,
         });
         setFullScroll(response);
         // 重置滚动位置
@@ -111,7 +119,7 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
       }
     };
     requestFull();
-  }, [debouncedConfigForFull]);
+  }, [debouncedConfigForFull, ensureNoScroll, optimizationMode]);
 
   // 绘制交互层
   useEffect(() => {
@@ -170,8 +178,10 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
       scrollMode,
       scrollSpeed,
       totalDurationSec,
+      ensureNoScroll,
+      optimizationMode,
     });
-  }, [fps, scrollMode, scrollSpeed, totalDurationSec, onRenderParamsChange]);
+  }, [fps, scrollMode, scrollSpeed, totalDurationSec, ensureNoScroll, optimizationMode, onRenderParamsChange]);
 
   const handleSubtitleChange = (id: string, updates: Partial<SubtitleItem>) => {
     const newSubtitles = config.subtitles.map(s =>
@@ -514,6 +524,51 @@ export default function SubtitleEditor({ config, onConfigChange, onRenderParamsC
                 </small>
               </div>
             )}
+            
+            {/* 确保没有滚动选项 */}
+            <div className="property-group">
+              <label className="radio-option">
+                <input
+                  type="checkbox"
+                  checked={ensureNoScroll}
+                  onChange={(e) => {
+                    setEnsureNoScroll(e.target.checked);
+                    if (!e.target.checked) {
+                      setOptimizationMode(null);
+                    }
+                  }}
+                />
+                <span>确保没有抖动</span>
+              </label>
+              {ensureNoScroll && (
+                <div style={{ marginTop: '8px', marginLeft: '20px' }}>
+                  <div style={{ marginBottom: '8px', fontSize: '12px', color: '#666' }}>
+                    选择优化模式：
+                  </div>
+                  <label className="radio-option">
+                    <input
+                      type="radio"
+                      name="optimizationMode"
+                      value="duration"
+                      checked={optimizationMode === 'duration'}
+                      onChange={() => setOptimizationMode('duration')}
+                    />
+                    <span>时长优先（保持总帧数不变，调整行间距）</span>
+                  </label>
+                  <label className="radio-option">
+                    <input
+                      type="radio"
+                      name="optimizationMode"
+                      value="layout"
+                      checked={optimizationMode === 'layout'}
+                      onChange={() => setOptimizationMode('layout')}
+                    />
+                    <span>排版优先（直接取整 px/frame）</span>
+                  </label>
+                </div>
+              )}
+            </div>
+            
             <div className="property-group">
               <label>当前位置 y (px)</label>
               <input
